@@ -19,6 +19,7 @@ import libvirt
 import os
 import collections
 import subprocess
+import re
 
 from collectors.lib import utils
 from bs4 import BeautifulSoup
@@ -68,69 +69,90 @@ def main():
         batches = chunker(domains, BATCH_SIZE)
 
         for batch in batches:
-            vms = {}
-            for domain in batch:
-                if domain.isActive() != 1:
-                    utils.err("Domain %s is inactive. Skipping." % domain.name())
-                    continue
-
-                try:
-                    vm = {}
-                    xml = BeautifulSoup(domain.XMLDesc())
-                    vm[TAG_DEPLOY_ID] = domain.name()
-                    vm[FIELDS["memory"]] = get_memory(domain, xml)
-                    vm.update(get_network_traffic(domain, xml))
-                    vm[TAG_TYPE] = get_type(domain,xml)
-                except LibvirtCollectorError as err:
-                    utils.err(err.value)
-                    continue
-
-                vm_pid_file = "%s/%s.pid" % (PID_DIR, vm[TAG_DEPLOY_ID])
-
-                if not os.path.isfile(vm_pid_file):
-                    utils.err("PID file for virtual machine %s doesn't exist. Skipping." % vm[TAG_DEPLOY_ID])
-                    continue
-
-                pid = ""
-                try:
-                    file = open(vm_pid_file)
-                    try:
-                        pid = file.readline()
-                    except IOError as err:
-                        utils.err("Cannot read PID file for virtual machine %s: %s. Skipping." % (vm[TAG_DEPLOY_ID], err.strerror))
-                        continue
-                    finally:
-                        file.close()
-                except IOError as err:
-                    utils.err("Cannot open PID file for virtual machine %s: %s. Skipping." % (vm[TAG_DEPLOY_ID], err.strerror))
-                    continue
-
-                vms[pid.strip()] = vm
-
-            if not vms:
-                continue # no vms in this batch
-
-            ordered_vms = collections.OrderedDict(sorted(vms.items()))
-            pids = ','.join(ordered_vms.keys())
-
-            p1 = subprocess.Popen(["top", "-b", "-d2", "-n2", "-oPID", "-p%s" % pids], stdout=subprocess.PIPE)
-            p2 = subprocess.Popen("tac", stdin=p1.stdout, stdout=subprocess.PIPE)
-            p3 = subprocess.Popen(["sed", "-n", r"'/PID\s*USER/{g;1!p;};h'"], stdin=p2.stdout, stdout=subprocess.PIPE)
-            p4 = subprocess.Popen(["awk", "'{print $7}'"], stdin=p3.stdout, stdout=subprocess.PIPE)
-            output, err = p4.communicate()
-            if err:
-                utils.err("Cannot read CPU load from top. Stopping.")
+            if not process_batch(batch):
                 return ERROR_CODE_DONT_RETRY
 
-            cpu_loads = map(lambda element: float(element), output.split())
-            for vm, cpu_load in zip(ordered_vms, cpu_loads):
-                vm[FIELDS["cpuload"]] = cpu_load
+        sys.stdout.flush()
+        time.sleep(INTERVAL)
 
-            print_batch(ordered_vms)
+def process_batch(batch):
+    vms = {}
+    for domain in batch:
+        if domain.isActive() != 1:
+            utils.err("Domain %s is inactive. Skipping." % domain.name())
+            continue
+        try:
+            vm = {}
+            xml = BeautifulSoup(domain.XMLDesc())
+            vm[TAG_DEPLOY_ID] = domain.name()
+            vm[FIELDS["memory"]] = get_memory(domain, xml)
+            vm.update(get_network_traffic(domain, xml))
+            vm[TAG_TYPE] = get_type(domain,xml)
+            vms[get_pid(vm[TAG_DEPLOY_ID])] = vm
+        except LibvirtCollectorError as err:
+            utils.err(err.value)
+            continue
 
-            sys.stdout.flush()
-            time.sleep(INTERVAL)
+    if not vms:
+        return True
 
+    try:
+        ordered_vms = collections.OrderedDict(sorted(vms.items()))
+        pids = ','.join(ordered_vms.keys())
+        cpu_loads = get_cpu_loads(pids)
+        for vm, cpu_load in zip(ordered_vms, cpu_loads):
+            vm[FIELDS["cpu"]] = cpu_load
+
+        print_batch(ordered_vms)
+    except LibvirtCollectorError as err:
+        utils.err(err.value)
+        return False
+
+    return True
+
+def get_pid(vm_name):
+    vm_pid_file = "%s/%s.pid" % (PID_DIR, vm_name)
+
+    if not os.path.isfile(vm_pid_file):
+        raise LibvirtCollectorError("PID file for virtual machine %s doesn't exist. Skipping." % vm_name)
+
+    pid = ""
+    try:
+        file = open(vm_pid_file)
+        try:
+            pid = file.readline()
+        except IOError as err:
+            raise LibvirtCollectorError("Cannot read PID file for virtual machine %s: %s. Skipping." % (vm_name, err.strerror))
+        finally:
+            file.close()
+    except IOError as err:
+        raise LibvirtCollectorError("Cannot open PID file for virtual machine %s: %s. Skipping." % (vm_name, err.strerror))
+
+    return pid.strip()
+
+def get_cpu_loads(pids):
+    p1 = subprocess.Popen(["top", "-b", "-d2", "-n2", "-oPID", "-p%s" % pids], stdout=subprocess.PIPE)
+    output, err = p1.communicate()
+    if err:
+        raise LibvirtCollectorError("Cannot read CPU load from top. Stopping.")
+
+    regex = re.compile(r"^\s*PID\s*USER")
+    position = None
+
+    lines = output.strip().split("\n")
+    lines = lines[len(lines)/2:]
+    lines = map(lambda line: line.strip(), lines)
+    for i,line in enumerate(lines):
+        if regex.match(line):
+            position = i
+            break
+
+    if not position:
+        raise LibvirtCollectorError("Cannot parse CPU load from top. Stopping.")
+
+    data_lines = lines[position+1:]
+
+    return map(lambda row: row.split()[6], data_lines)
 
 def chunker(seq, size):
     return (seq[pos:pos + size] for pos in xrange(0, len(seq), size))
