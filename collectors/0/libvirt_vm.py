@@ -28,9 +28,16 @@ INTERVAL = 15  # seconds
 
 METRIC_PREFIX = "libvirt.vm."
 
-FIELDS = {"netrx": "%snetwork.rx" % METRIC_PREFIX,
-          "nettx": "%snetwork.tx" % METRIC_PREFIX,
-          "cpu": "%scpu" % METRIC_PREFIX,
+FIELDS = {"net_rx": "%snetwork.rx" % METRIC_PREFIX,
+          "net_tx": "%snetwork.tx" % METRIC_PREFIX,
+          "cpu_load": "%scpu.load" % METRIC_PREFIX,
+          "cpu_time": "%scpu.time" % METRIC_PREFIX,
+          "disk_read_req": "%sdisk.read.requests" % METRIC_PREFIX,
+          "disk_read_bytes": "%sdisk.read.bytes" % METRIC_PREFIX,
+          "disk_write_req": "%sdisk.write.requests" % METRIC_PREFIX,
+          "disk_write_bytes": "%sdisk.write.bytes" % METRIC_PREFIX,
+          "disk_total_req": "%sdisk.total.req" % METRIC_PREFIX,
+          "disk_total_bytes": "%sdisk.total.bytes" % METRIC_PREFIX,
           "memory": "%smemory" % METRIC_PREFIX}
 
 STATES = {0: "NO_STATE",
@@ -91,9 +98,10 @@ def process_batch(batch):
             vm = {}
             xml = BeautifulSoup(domain.XMLDesc())
             vm[TAG_DEPLOY_ID] = domain.name()
-            vm[FIELDS["memory"]] = get_memory(domain, xml)
+            vm[FIELDS["memory"]] = get_memory(domain)
             vm.update(get_network_traffic(domain, xml))
             vm[TAG_TYPE] = get_type(domain, xml)
+            vm[FIELDS["cpu_time"]] = get_cpu_time(domain)
             vms[get_pid(vm[TAG_DEPLOY_ID])] = vm
         except LibvirtCollectorError as err:
             utils.err(err.value)
@@ -115,6 +123,20 @@ def process_batch(batch):
         return False
 
     return True
+
+
+def get_cpu_time(domain):
+    retval = domain.getCPUStats(-1)
+    if not retval:
+        raise LibvirtCollectorError("No cpu time data available for domain"
+                                    "%s. Skipping." % (domain.name()))
+
+    data = retval[0]
+    if "cpu_time" not in data:
+        raise LibvirtCollectorError("Mission cpu time for domain"
+                                    "%s. Skipping." % (domain.name()))
+
+    return data["cpu_time"]
 
 
 def get_pid(vm_name):
@@ -174,7 +196,7 @@ def chunker(seq, size):
     return (seq[pos:pos + size] for pos in xrange(0, len(seq), size))
 
 
-def get_memory(domain, xml):
+def get_memory(domain):
     mem = domain.memoryStats()
     return max([mem["actual"], mem["rss"]])
 
@@ -198,7 +220,7 @@ def get_network_traffic(domain, xml):
                                         "for domain %s. Skipping" %
                                         domain.name())
 
-    return {FIELDS["netrx"]: netrx, FIELDS["nettx"]: nettx}
+    return {FIELDS["net_rx"]: netrx, FIELDS["net_tx"]: nettx}
 
 
 def get_type(domain, xml):
