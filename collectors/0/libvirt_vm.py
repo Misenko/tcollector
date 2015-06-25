@@ -32,11 +32,11 @@ FIELDS = {"net_rx": "%snetwork.rx" % METRIC_PREFIX,
           "net_tx": "%snetwork.tx" % METRIC_PREFIX,
           "cpu_load": "%scpu.load" % METRIC_PREFIX,
           "cpu_time": "%scpu.time" % METRIC_PREFIX,
-          "disk_read_req": "%sdisk.read.requests" % METRIC_PREFIX,
+          "disk_read_reqs": "%sdisk.read.requests" % METRIC_PREFIX,
           "disk_read_bytes": "%sdisk.read.bytes" % METRIC_PREFIX,
-          "disk_write_req": "%sdisk.write.requests" % METRIC_PREFIX,
+          "disk_write_reqs": "%sdisk.write.requests" % METRIC_PREFIX,
           "disk_write_bytes": "%sdisk.write.bytes" % METRIC_PREFIX,
-          "disk_total_req": "%sdisk.total.req" % METRIC_PREFIX,
+          "disk_total_reqs": "%sdisk.total.req" % METRIC_PREFIX,
           "disk_total_bytes": "%sdisk.total.bytes" % METRIC_PREFIX,
           "memory": "%smemory" % METRIC_PREFIX}
 
@@ -100,6 +100,7 @@ def process_batch(batch):
             vm[TAG_DEPLOY_ID] = domain.name()
             vm[FIELDS["memory"]] = get_memory(domain)
             vm.update(get_network_traffic(domain, xml))
+            vm.update(get_disk_io(domain, xml))
             vm[TAG_TYPE] = get_type(domain, xml)
             vm[FIELDS["cpu_time"]] = get_cpu_time(domain)
             vms[get_pid(vm[TAG_DEPLOY_ID])] = vm
@@ -221,6 +222,39 @@ def get_network_traffic(domain, xml):
                                         domain.name())
 
     return {FIELDS["net_rx"]: netrx, FIELDS["net_tx"]: nettx}
+
+
+def get_disk_io(domain, xml):
+    disks = xml.findAll("disk")
+    read_reqs = 0
+    write_reqs = 0
+    read_bytes = 0
+    write_bytes = 0
+
+    for disk in disks:
+        target = disk.target
+        if not target or not target.has_attr("dev"):
+            raise LibvirtCollectorError("Cannot read disk name "
+                                        "for domain %s. Skipping" %
+                                        domain.name())
+        try:
+            read_reqs += domain.blockStats(disk.target["dev"])[0]  # rd_req
+            write_reqs += domain.blockStats(disk.target["dev"])[1]  # rd_bytes
+            read_bytes += domain.blockStats(disk.target["dev"])[2]  # wr_req
+            write_bytes += domain.blockStats(disk.target["dev"])[3]  # wr_bytes
+        except libvirt.libvirtError:
+            raise LibvirtCollectorError("Cannot read interface statistics"
+                                        "for domain %s. Skipping" %
+                                        domain.name())
+
+        disk_data = {FIELDS["disk_read_reqs"]: read_reqs,
+                     FIELDS["disk_write_reqs"]: write_reqs,
+                     FIELDS["disk_total_reqs"]: read_reqs + write_reqs,
+                     FIELDS["disk_read_bytes"]: read_bytes,
+                     FIELDS["disk_write_bytes"]: write_bytes,
+                     FIELDS["disk_total_bytes"]: read_bytes + write_bytes}
+
+        return disk_data
 
 
 def get_type(domain, xml):
