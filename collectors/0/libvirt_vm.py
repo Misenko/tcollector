@@ -30,6 +30,8 @@ METRIC_PREFIX = "libvirt.vm."
 
 FIELDS = {"net_rx": "%snetwork.rx" % METRIC_PREFIX,
           "net_tx": "%snetwork.tx" % METRIC_PREFIX,
+          "net_current_rx": "%snetwork.current.rx" % METRIC_PREFIX,
+          "net_current_tx": "%snetwork.current.tx" % METRIC_PREFIX,
           "cpu_load": "%scpu.load" % METRIC_PREFIX,
           "cpu_time": "%scpu.time" % METRIC_PREFIX,
           "disk_read_reqs": "%sdisk.read.requests" % METRIC_PREFIX,
@@ -37,7 +39,13 @@ FIELDS = {"net_rx": "%snetwork.rx" % METRIC_PREFIX,
           "disk_write_reqs": "%sdisk.write.requests" % METRIC_PREFIX,
           "disk_write_bytes": "%sdisk.write.bytes" % METRIC_PREFIX,
           "disk_total_reqs": "%sdisk.total.req" % METRIC_PREFIX,
+          "disk_current_read_reqs": "%sdisk.current.read.requests" % METRIC_PREFIX,
+          "disk_current_read_bytes": "%sdisk.current.read.bytes" % METRIC_PREFIX,
+          "disk_current_write_reqs": "%sdisk.current.write.requests" % METRIC_PREFIX,
+          "disk_current_write_bytes": "%sdisk.current.write.bytes" % METRIC_PREFIX,
+          "disk_current_total_reqs": "%sdisk.current.total.reqs" % METRIC_PREFIX,
           "disk_total_bytes": "%sdisk.total.bytes" % METRIC_PREFIX,
+          "disk_current_total_bytes": "%sdisk.current.total.bytes" % METRIC_PREFIX,
           "memory": "%smemory" % METRIC_PREFIX}
 
 STATES = {0: "NO_STATE",
@@ -60,6 +68,8 @@ PID_DIR = "/var/run/libvirt/qemu"
 LIBVIRT_URI = "qemu:///system"
 
 ERROR_CODE_DONT_RETRY = 13  # do not to restart this collector after failure
+
+DATA_RETRIEVAL_WAIT = 1.0
 
 
 class LibvirtCollectorError(Exception):
@@ -116,7 +126,7 @@ def process_batch(batch):
         pids = ','.join(ordered_vms.keys())
         cpu_loads = get_cpu_loads(pids)
         for vm, cpu_load in zip(ordered_vms.values(), cpu_loads):
-            vm[FIELDS["cpu"]] = cpu_load
+            vm[FIELDS["cpu_load"]] = cpu_load
 
         print_batch(ordered_vms)
     except LibvirtCollectorError as err:
@@ -202,8 +212,26 @@ def get_memory(domain):
     return max([mem["actual"], mem["rss"]])
 
 
+def get_per_sec_data(first_data, second_data):
+    return map(lambda data: (data[1] - data[0])/DATA_RETRIEVAL_WAIT,
+               zip(first_data, second_data))
+
+
 def get_network_traffic(domain, xml):
     interfaces = xml.findAll("interface")
+    first_data = get_network_data(interfaces, domain)
+    time.sleep(DATA_RETRIEVAL_WAIT)
+    second_data = get_network_data(interfaces, domain)
+
+    data_per_sec = get_per_sec_data(first_data, second_data)
+
+    return {FIELDS["net_rx"]: second_data[0],
+            FIELDS["net_tx"]: second_data[1],
+            FIELDS["net_current_rx"]: data_per_sec[0],
+            FIELDS["net_current_tx"]: data_per_sec[1]}
+
+
+def get_network_data(interfaces, domain):
     netrx = 0
     nettx = 0
     for interface in interfaces:
@@ -221,11 +249,34 @@ def get_network_traffic(domain, xml):
                                         "for domain %s. Skipping" %
                                         domain.name())
 
-    return {FIELDS["net_rx"]: netrx, FIELDS["net_tx"]: nettx}
+    return (netrx, nettx)
 
 
 def get_disk_io(domain, xml):
     disks = xml.findAll("disk")
+    first_data = get_disk_data(disks, domain)
+    time.sleep(DATA_RETRIEVAL_WAIT)
+    second_data = get_disk_data(disks, domain)
+
+    data_per_sec = get_per_sec_data(first_data, second_data)
+
+    disk_data = {FIELDS["disk_read_reqs"]: second_data[0],
+                 FIELDS["disk_write_reqs"]: second_data[1],
+                 FIELDS["disk_total_reqs"]: second_data[0] + second_data[1],
+                 FIELDS["disk_read_bytes"]: second_data[2],
+                 FIELDS["disk_write_bytes"]: second_data[3],
+                 FIELDS["disk_total_bytes"]: second_data[2] + second_data[3],
+                 FIELDS["disk_current_read_reqs"]: data_per_sec[0],
+                 FIELDS["disk_current_write_reqs"]: data_per_sec[1],
+                 FIELDS["disk_current_total_reqs"]: data_per_sec[0] + data_per_sec[1],
+                 FIELDS["disk_current_read_bytes"]: data_per_sec[2],
+                 FIELDS["disk_current_write_bytes"]: data_per_sec[3],
+                 FIELDS["disk_current_total_bytes"]: data_per_sec[2] + data_per_sec[3]}
+
+    return disk_data
+
+
+def get_disk_data(disks, domain):
     read_reqs = 0
     write_reqs = 0
     read_bytes = 0
@@ -247,14 +298,7 @@ def get_disk_io(domain, xml):
                                         "for domain %s. Skipping" %
                                         domain.name())
 
-        disk_data = {FIELDS["disk_read_reqs"]: read_reqs,
-                     FIELDS["disk_write_reqs"]: write_reqs,
-                     FIELDS["disk_total_reqs"]: read_reqs + write_reqs,
-                     FIELDS["disk_read_bytes"]: read_bytes,
-                     FIELDS["disk_write_bytes"]: write_bytes,
-                     FIELDS["disk_total_bytes"]: read_bytes + write_bytes}
-
-        return disk_data
+    return(read_reqs, write_reqs, read_bytes, write_bytes)
 
 
 def get_type(domain, xml):
