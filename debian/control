@@ -7,10 +7,10 @@ Build-Depends: debhelper ( >= 8 ), python-support
 vcs-Browser: https://github.com/OpenTSDB/tcollector
 Homepage: http://opentsdb.net/
 
-Package: tcollector
+Package: meta-tcollector
 Architecture: all
 Depends: ${misc:Depends}, ${python:Depends}, adduser
-Recommends: smartmontools
+Recommends: smartmontools, python-bs4, python-libvirt
 Section: utils
 Description: data collection framework for OpenTSDB
  OpenTSDB is a distributed, scalable Time Series Database (TSDB) written on 
