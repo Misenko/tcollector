@@ -1,6 +1,6 @@
 #!/usr/bin/python2
 #
-# vm.py -- a virtual machine data collector for tcollector/OpenTSDB
+# libvirt_vm.py -- a virtual machine data collector for tcollector/OpenTSDB
 # Copyright (C) 2015  Michal Kimle
 #
 # This program is free software: you can redistribute it and/or modify it
@@ -15,14 +15,22 @@
 
 import sys
 import time
-import libvirt
 import os
 import collections
 import subprocess
 import re
 
 from collectors.lib import utils
-from bs4 import BeautifulSoup
+
+try:
+    import libvirt
+except ImportError:
+    libvirt = None
+
+try:
+    from bs4 import BeautifulSoup
+except ImportError:
+    BeautifulSoup = None
 
 INTERVAL = 15  # seconds
 
@@ -81,6 +89,13 @@ class LibvirtCollectorError(Exception):
 
 
 def main():
+    if libvirt is None:
+        utils.err("Python module 'libvirt' is missing")
+        return ERROR_CODE_DONT_RETRY
+    if BeautifulSoup is None:
+        utils.err("Python module 'BeautifulSoup 4' is missing")
+        return ERROR_CODE_DONT_RETRY
+
     conn = libvirt.openReadOnly(LIBVIRT_URI)
     if conn is None:
         utils.err("Failed to open connection to the hypervisor")
