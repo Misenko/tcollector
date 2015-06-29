@@ -11,6 +11,7 @@ Package: meta-tcollector
 Architecture: all
 Depends: ${misc:Depends}, ${python:Depends}, adduser
 Recommends: smartmontools, python-bs4, python-libvirt
+Conflicts: tcollector
 Section: utils
 Description: data collection framework for OpenTSDB
  OpenTSDB is a distributed, scalable Time Series Database (TSDB) written on 
