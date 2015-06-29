@@ -13,4 +13,4 @@ clean:
 	rm -f tcollector
 
 override_dh_installinit:
-	dh_installinit --no-start
+	dh_installinit --no-start --name='tcollector'
