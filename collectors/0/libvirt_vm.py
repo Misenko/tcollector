@@ -15,7 +15,6 @@
 
 import sys
 import time
-import os
 import collections
 import subprocess
 import re
@@ -47,13 +46,19 @@ FIELDS = {"net_rx": "%snetwork.rx" % METRIC_PREFIX,
           "disk_write_reqs": "%sdisk.write.requests" % METRIC_PREFIX,
           "disk_write_bytes": "%sdisk.write.bytes" % METRIC_PREFIX,
           "disk_total_reqs": "%sdisk.total.req" % METRIC_PREFIX,
-          "disk_current_read_reqs": "%sdisk.current.read.requests" % METRIC_PREFIX,
-          "disk_current_read_bytes": "%sdisk.current.read.bytes" % METRIC_PREFIX,
-          "disk_current_write_reqs": "%sdisk.current.write.requests" % METRIC_PREFIX,
-          "disk_current_write_bytes": "%sdisk.current.write.bytes" % METRIC_PREFIX,
-          "disk_current_total_reqs": "%sdisk.current.total.reqs" % METRIC_PREFIX,
+          "disk_current_read_reqs": "%sdisk.current.read.requests" %
+                                    METRIC_PREFIX,
+          "disk_current_read_bytes": "%sdisk.current.read.bytes" %
+                                     METRIC_PREFIX,
+          "disk_current_write_reqs": "%sdisk.current.write.requests" %
+                                     METRIC_PREFIX,
+          "disk_current_write_bytes": "%sdisk.current.write.bytes" %
+                                      METRIC_PREFIX,
+          "disk_current_total_reqs": "%sdisk.current.total.reqs" %
+                                     METRIC_PREFIX,
           "disk_total_bytes": "%sdisk.total.bytes" % METRIC_PREFIX,
-          "disk_current_total_bytes": "%sdisk.current.total.bytes" % METRIC_PREFIX,
+          "disk_current_total_bytes": "%sdisk.current.total.bytes" %
+                                      METRIC_PREFIX,
           "memory": "%smemory" % METRIC_PREFIX}
 
 STATES = {0: "NO_STATE",
@@ -68,10 +73,9 @@ STATES = {0: "NO_STATE",
 
 TAG_DEPLOY_ID = "deploy_id"
 TAG_TYPE = "type"
+PID = "pid"
 
 BATCH_SIZE = 20
-
-PID_DIR = "/var/run/libvirt/qemu"
 
 LIBVIRT_URI = "qemu:///system"
 
@@ -128,7 +132,7 @@ def process_batch(batch):
             vm.update(get_disk_io(domain, xml))
             vm[TAG_TYPE] = get_type(domain, xml)
             vm[FIELDS["cpu_time"]] = get_cpu_time(domain)
-            vms[get_pid(vm[TAG_DEPLOY_ID])] = vm
+            vms[domain.UUIDString()] = vm
         except LibvirtCollectorError as err:
             utils.err(err.value)
             continue
@@ -137,8 +141,9 @@ def process_batch(batch):
         return True
 
     try:
+        vms = find_pids(vms)
         ordered_vms = collections.OrderedDict(sorted(vms.items()))
-        pids = ','.join(ordered_vms.keys())
+        pids = ','.join(map(lambda vm: vm.pop(PID), ordered_vms.values()))
         cpu_loads = get_cpu_loads(pids)
         for vm, cpu_load in zip(ordered_vms.values(), cpu_loads):
             vm[FIELDS["cpu_load"]] = cpu_load
@@ -149,6 +154,31 @@ def process_batch(batch):
         return False
 
     return True
+
+
+def find_pids(vms):
+    p1 = subprocess.Popen(["ps", "-ewwo", "pid,command"],
+                          stdout=subprocess.PIPE)
+    output, err = p1.communicate()
+    if err:
+        raise LibvirtCollectorError("Cannot read PIDs from ps. Stopping.")
+
+    match_counter = 0
+    regex = re.compile(r"-uuid ([a-z0-9]{8}-[a-z0-9]{4}-[a-z0-9]{4}-"
+                       "[a-z0-9]{4}-[a-z0-9]{12})")
+    lines = output.strip().split("\n")
+    for line in lines:
+        match = regex.search(line)
+        if match:
+            uuid = match.group(1)
+            vms[uuid][PID] = line.split(' ', 1)[0]  # 1. column is process PID
+            match_counter += 1
+
+    if match_counter != len(vms):
+        raise LibvirtCollectorError("Cannot retrieve PIDs for some virtual"
+                                    " machines. Stopping.")
+
+    return vms
 
 
 def get_cpu_time(domain):
@@ -163,32 +193,6 @@ def get_cpu_time(domain):
                                     "%s. Skipping." % (domain.name()))
 
     return data["cpu_time"]
-
-
-def get_pid(vm_name):
-    vm_pid_file = "%s/%s.pid" % (PID_DIR, vm_name)
-
-    if not os.path.isfile(vm_pid_file):
-        raise LibvirtCollectorError("PID file for virtual machine %s"
-                                    "doesn't exist. Skipping." % vm_name)
-
-    pid = ""
-    try:
-        file = open(vm_pid_file)
-        try:
-            pid = file.readline()
-        except IOError as err:
-            raise LibvirtCollectorError("Cannot read PID file for virtual"
-                                        "machine %s: %s. Skipping." %
-                                        (vm_name, err.strerror))
-        finally:
-            file.close()
-    except IOError as err:
-        raise LibvirtCollectorError("Cannot open PID file for virtual"
-                                    "machine %s: %s. Skipping." %
-                                    (vm_name, err.strerror))
-
-    return pid.strip()
 
 
 def get_cpu_loads(pids):
@@ -283,10 +287,12 @@ def get_disk_io(domain, xml):
                  FIELDS["disk_total_bytes"]: second_data[2] + second_data[3],
                  FIELDS["disk_current_read_reqs"]: data_per_sec[0],
                  FIELDS["disk_current_write_reqs"]: data_per_sec[1],
-                 FIELDS["disk_current_total_reqs"]: data_per_sec[0] + data_per_sec[1],
+                 FIELDS["disk_current_total_reqs"]: data_per_sec[0] +
+                 data_per_sec[1],
                  FIELDS["disk_current_read_bytes"]: data_per_sec[2],
                  FIELDS["disk_current_write_bytes"]: data_per_sec[3],
-                 FIELDS["disk_current_total_bytes"]: data_per_sec[2] + data_per_sec[3]}
+                 FIELDS["disk_current_total_bytes"]: data_per_sec[2] +
+                 data_per_sec[3]}
 
     return disk_data
 
