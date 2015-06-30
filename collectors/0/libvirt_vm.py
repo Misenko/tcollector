@@ -1,4 +1,4 @@
-#!/usr/bin/python2
+#!/usr/bin/python
 #
 # libvirt_vm.py -- a virtual machine data collector for tcollector/OpenTSDB
 # Copyright (C) 2015  Michal Kimle
