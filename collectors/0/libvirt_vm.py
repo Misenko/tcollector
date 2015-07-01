@@ -18,8 +18,12 @@ import time
 import collections
 import subprocess
 import re
+import os
 
 from collectors.lib import utils
+from collectors.lib import libvirt_vm_utils
+from collectors.lib.libvirt_vm_errors import LibvirtVmDataError
+from collectors.lib.libvirt_vm_errors import LibvirtVmProcessingError
 
 try:
     import libvirt
@@ -84,37 +88,36 @@ ERROR_CODE_DONT_RETRY = 13  # do not to restart this collector after failure
 DATA_RETRIEVAL_WAIT = 1.0
 
 
-class LibvirtCollectorError(Exception):
-    def __init__(self, value):
-        self.value = value
-
-    def __str__(self):
-        return repr(self.value)
-
-
 def main():
+    try:
+        check_imports()
+
+        conn = libvirt.openReadOnly(LIBVIRT_URI)
+        if conn is None:
+            utils.err("Failed to open connection to the hypervisor")
+            return ERROR_CODE_DONT_RETRY
+
+        while True:
+            domains = conn.listAllDomains()
+            batches = libvirt_vm_utils.chunker(domains, BATCH_SIZE)
+
+            for batch in batches:
+                process_batch(batch)
+
+            sys.stdout.flush()
+            time.sleep(INTERVAL)
+
+    except LibvirtVmProcessingError as err:
+        utils.err(err.value)
+        return ERROR_CODE_DONT_RETRY
+
+
+def check_imports():
     if libvirt is None:
-        utils.err("Python module 'libvirt' is missing")
-        return ERROR_CODE_DONT_RETRY
+        raise LibvirtVmProcessingError("Python module 'libvirt' is missing")
     if BeautifulSoup is None:
-        utils.err("Python module 'BeautifulSoup 4' is missing")
-        return ERROR_CODE_DONT_RETRY
-
-    conn = libvirt.openReadOnly(LIBVIRT_URI)
-    if conn is None:
-        utils.err("Failed to open connection to the hypervisor")
-        return ERROR_CODE_DONT_RETRY
-
-    while True:
-        domains = conn.listAllDomains()
-        batches = chunker(domains, BATCH_SIZE)
-
-        for batch in batches:
-            if not process_batch(batch):
-                return ERROR_CODE_DONT_RETRY
-
-        sys.stdout.flush()
-        time.sleep(INTERVAL)
+        raise LibvirtVmProcessingError("Python module 'BeautifulSoup 4'"
+                                       "is missing")
 
 
 def process_batch(batch):
@@ -127,18 +130,18 @@ def process_batch(batch):
             vm = {}
             xml = BeautifulSoup(domain.XMLDesc())
             vm[TAG_DEPLOY_ID] = domain.name()
+            vm[TAG_TYPE] = get_type(domain, xml)
             vm[FIELDS["memory"]] = get_memory(domain)
+            vm[FIELDS["cpu_time"]] = get_cpu_time(domain)
             vm.update(get_network_traffic(domain, xml))
             vm.update(get_disk_io(domain, xml))
-            vm[TAG_TYPE] = get_type(domain, xml)
-            vm[FIELDS["cpu_time"]] = get_cpu_time(domain)
             vms[domain.UUIDString()] = vm
-        except LibvirtCollectorError as err:
+        except LibvirtVmDataError as err:
             utils.err(err.value)
             continue
 
     if not vms:
-        return True
+        return
 
     try:
         vms = find_pids(vms)
@@ -149,11 +152,8 @@ def process_batch(batch):
             vm[FIELDS["cpu_load"]] = cpu_load
 
         print_batch(ordered_vms)
-    except LibvirtCollectorError as err:
-        utils.err(err.value)
-        return False
-
-    return True
+    except LibvirtVmDataError as err:
+        raise LibvirtVmProcessingError(err.value)
 
 
 def find_pids(vms):
@@ -161,7 +161,7 @@ def find_pids(vms):
                           stdout=subprocess.PIPE)
     output, err = p1.communicate()
     if err:
-        raise LibvirtCollectorError("Cannot read PIDs from ps. Stopping.")
+        raise LibvirtVmDataError("Cannot read PIDs from ps. Stopping.")
 
     match_counter = 0
     regex = re.compile(r"-uuid ([a-z0-9]{8}-[a-z0-9]{4}-[a-z0-9]{4}-"
@@ -175,8 +175,8 @@ def find_pids(vms):
             match_counter += 1
 
     if match_counter != len(vms):
-        raise LibvirtCollectorError("Cannot retrieve PIDs for some virtual"
-                                    " machines. Stopping.")
+        raise LibvirtVmDataError("Cannot retrieve PIDs for some virtual"
+                                 " machines. Stopping.")
 
     return vms
 
@@ -184,13 +184,13 @@ def find_pids(vms):
 def get_cpu_time(domain):
     retval = domain.getCPUStats(-1)
     if not retval:
-        raise LibvirtCollectorError("No cpu time data available for domain"
-                                    "%s. Skipping." % (domain.name()))
+        raise LibvirtVmDataError("No cpu time data available for domain"
+                                 "%s. Skipping." % (domain.name()))
 
     data = retval[0]
     if "cpu_time" not in data:
-        raise LibvirtCollectorError("Mission cpu time for domain"
-                                    "%s. Skipping." % (domain.name()))
+        raise LibvirtVmDataError("Mission cpu time for domain"
+                                 "%s. Skipping." % (domain.name()))
 
     return data["cpu_time"]
 
@@ -200,7 +200,7 @@ def get_cpu_loads(pids):
                           stdout=subprocess.PIPE)
     output, err = p1.communicate()
     if err:
-        raise LibvirtCollectorError("Cannot read CPU load from top. Stopping.")
+        raise LibvirtVmDataError("Cannot read CPU load from top. Stopping.")
 
     regex = re.compile(r"^\s*PID\s*USER")
     position = None
@@ -214,16 +214,12 @@ def get_cpu_loads(pids):
             break
 
     if not position:
-        raise LibvirtCollectorError("Cannot parse CPU load from top. "
-                                    "Stopping.")
+        raise LibvirtVmDataError("Cannot parse CPU load from top. "
+                                 "Stopping.")
 
     data_lines = lines[position+1:]
 
     return map(lambda row: row.split()[6], data_lines)
-
-
-def chunker(seq, size):
-    return (seq[pos:pos + size] for pos in xrange(0, len(seq), size))
 
 
 def get_memory(domain):
@@ -256,17 +252,17 @@ def get_network_data(interfaces, domain):
     for interface in interfaces:
         target = interface.target
         if not target or not target.has_attr("dev"):
-            raise LibvirtCollectorError("Cannot read interface name "
-                                        "for domain %s. Skipping" %
-                                        domain.name())
+            raise LibvirtVmDataError("Cannot read interface name "
+                                     "for domain %s. Skipping" %
+                                     domain.name())
 
         try:
             netrx += domain.interfaceStats(interface.target["dev"])[0]  # netrx
             nettx += domain.interfaceStats(interface.target["dev"])[4]  # nettx
         except libvirt.libvirtError:
-            raise LibvirtCollectorError("Cannot read interface statistics"
-                                        "for domain %s. Skipping" %
-                                        domain.name())
+            raise LibvirtVmDataError("Cannot read interface statistics"
+                                     "for domain %s. Skipping" %
+                                     domain.name())
 
     return (netrx, nettx)
 
@@ -306,18 +302,18 @@ def get_disk_data(disks, domain):
     for disk in disks:
         target = disk.target
         if not target or not target.has_attr("dev"):
-            raise LibvirtCollectorError("Cannot read disk name "
-                                        "for domain %s. Skipping" %
-                                        domain.name())
+            raise LibvirtVmDataError("Cannot read disk name "
+                                     "for domain %s. Skipping" %
+                                     domain.name())
         try:
             read_reqs += domain.blockStats(disk.target["dev"])[0]  # rd_req
             write_reqs += domain.blockStats(disk.target["dev"])[1]  # rd_bytes
             read_bytes += domain.blockStats(disk.target["dev"])[2]  # wr_req
             write_bytes += domain.blockStats(disk.target["dev"])[3]  # wr_bytes
         except libvirt.libvirtError:
-            raise LibvirtCollectorError("Cannot read interface statistics"
-                                        "for domain %s. Skipping" %
-                                        domain.name())
+            raise LibvirtVmDataError("Cannot read interface statistics"
+                                     "for domain %s. Skipping" %
+                                     domain.name())
 
     return(read_reqs, write_reqs, read_bytes, write_bytes)
 
@@ -325,8 +321,8 @@ def get_disk_data(disks, domain):
 def get_type(domain, xml):
     domain_tag = xml.domain
     if not domain_tag or not domain_tag.has_attr("type"):
-        raise LibvirtCollectorError("Cannot read type for domain %s. "
-                                    "Skipping" % domain.name())
+        raise LibvirtVmDataError("Cannot read type for domain %s. "
+                                 "Skipping" % domain.name())
 
     return domain_tag["type"]
 
