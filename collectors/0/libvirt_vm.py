@@ -15,13 +15,11 @@
 
 import sys
 import time
-import collections
+import random
 import subprocess
 import re
-import os
 
 from collectors.lib import utils
-from collectors.lib import libvirt_vm_utils
 from collectors.lib.libvirt_vm_errors import LibvirtVmDataError
 from collectors.lib.libvirt_vm_errors import LibvirtVmProcessingError
 
@@ -34,6 +32,11 @@ try:
     from bs4 import BeautifulSoup
 except ImportError:
     BeautifulSoup = None
+
+try:
+    import psutil
+except ImportError:
+    psutil = None
 
 INTERVAL = 15  # seconds
 
@@ -79,13 +82,13 @@ TAG_DEPLOY_ID = "deploy_id"
 TAG_TYPE = "type"
 PID = "pid"
 
-BATCH_SIZE = 20
-
 LIBVIRT_URI = "qemu:///system"
 
-ERROR_CODE_DONT_RETRY = 13  # do not to restart this collector after failure
+ERROR_CODE_DONT_RETRY = 13  # do not restart this collector after failure
 
-DATA_RETRIEVAL_WAIT = 1.0
+DATA_RETRIEVAL_WAIT = 0.3
+
+PSUTIL_OLD_VERSION = '1.2.1'
 
 
 def main():
@@ -99,10 +102,11 @@ def main():
 
         while True:
             domains = conn.listAllDomains()
-            batches = libvirt_vm_utils.chunker(domains, BATCH_SIZE)
+            random.shuffle(domains)
+            pids = get_pids(domains)
 
-            for batch in batches:
-                process_batch(batch)
+            for domain in domains:
+                process_domain(domain, pids.get(domain.UUIDString()))
 
             sys.stdout.flush()
             time.sleep(INTERVAL)
@@ -118,108 +122,80 @@ def check_imports():
     if BeautifulSoup is None:
         raise LibvirtVmProcessingError("Python module 'BeautifulSoup 4'"
                                        "is missing")
+    if psutil is None:
+        raise LibvirtVmProcessingError("Python module 'psutil' is missing")
 
 
-def process_batch(batch):
-    vms = {}
-    for domain in batch:
-        if domain.isActive() != 1:
-            utils.err("Domain %s is inactive. Skipping." % domain.name())
-            continue
-        try:
-            vm = {}
-            xml = BeautifulSoup(domain.XMLDesc())
-            vm[TAG_DEPLOY_ID] = domain.name()
-            vm[TAG_TYPE] = get_type(domain, xml)
-            vm[FIELDS["memory"]] = get_memory(domain)
-            vm[FIELDS["cpu_time"]] = get_cpu_time(domain)
-            vm.update(get_network_traffic(domain, xml))
-            vm.update(get_disk_io(domain, xml))
-            vms[domain.UUIDString()] = vm
-        except LibvirtVmDataError as err:
-            utils.err(err.value)
-            continue
-
-    if not vms:
+def process_domain(domain, pid):
+    if domain.isActive() != 1:
+        utils.err("Domain %s is inactive. Skipping." % domain.name())
+        return
+    if not pid:
+        utils.err("Cannot find PID for domain %s. Skipping." % domain.name())
         return
 
     try:
-        vms = find_pids(vms)
-        ordered_vms = collections.OrderedDict(sorted(vms.items()))
-        pids = ','.join(map(lambda vm: vm.pop(PID), ordered_vms.values()))
-        cpu_loads = get_cpu_loads(pids)
-        for vm, cpu_load in zip(ordered_vms.values(), cpu_loads):
-            vm[FIELDS["cpu_load"]] = cpu_load
-
-        print_batch(ordered_vms)
+        vm = {}
+        xml = BeautifulSoup(domain.XMLDesc())
+        vm[TAG_DEPLOY_ID] = domain.name()
+        vm[TAG_TYPE] = get_type(domain, xml)
+        vm[FIELDS["memory"]] = get_memory(domain)
+        vm[FIELDS["cpu_time"]] = get_cpu_time(domain, pid)
+        vm[FIELDS["cpu_load"]] = get_cpu_load(domain, pid)
+        vm.update(get_network_traffic(domain, xml))
+        vm.update(get_disk_io(domain, xml))
     except LibvirtVmDataError as err:
-        raise LibvirtVmProcessingError(err.value)
+        utils.err(err.value)
+        return
+
+    print_vm(vm)
 
 
-def find_pids(vms):
+def get_pids(domains):
     p1 = subprocess.Popen(["ps", "-ewwo", "pid,command"],
                           stdout=subprocess.PIPE)
     output, err = p1.communicate()
     if err:
-        raise LibvirtVmDataError("Cannot read PIDs from ps. Stopping.")
+        raise LibvirtVmProcessingError("Cannot read PIDs from ps. Stopping.")
 
-    match_counter = 0
     regex = re.compile(r"-uuid ([a-z0-9]{8}-[a-z0-9]{4}-[a-z0-9]{4}-"
                        "[a-z0-9]{4}-[a-z0-9]{12})")
+    pids = {}
+
     lines = output.strip().split("\n")
     for line in lines:
+        line = line.strip()
         match = regex.search(line)
         if match:
-            uuid = match.group(1)
-            vms[uuid][PID] = line.split(' ', 1)[0]  # 1. column is process PID
-            match_counter += 1
+            uuid = match.group(1).strip()
+            pid = line.split(' ', 1)[0]  # 1. column is process PID
+            try:
+                pids[uuid] = int(pid)
+            except ValueError:
+                raise LibvirtVmProcessingError("'%s' is not a valid PID"
+                                               "number" % pid)
 
-    if match_counter != len(vms):
-        raise LibvirtVmDataError("Cannot retrieve PIDs for some virtual"
-                                 " machines. Stopping.")
-
-    return vms
-
-
-def get_cpu_time(domain):
-    retval = domain.getCPUStats(-1)
-    if not retval:
-        raise LibvirtVmDataError("No cpu time data available for domain"
-                                 "%s. Skipping." % (domain.name()))
-
-    data = retval[0]
-    if "cpu_time" not in data:
-        raise LibvirtVmDataError("Mission cpu time for domain"
-                                 "%s. Skipping." % (domain.name()))
-
-    return data["cpu_time"]
+    return pids
 
 
-def get_cpu_loads(pids):
-    p1 = subprocess.Popen(["top", "-b", "-d2", "-n2", "-oPID", "-p%s" % pids],
-                          stdout=subprocess.PIPE)
-    output, err = p1.communicate()
-    if err:
-        raise LibvirtVmDataError("Cannot read CPU load from top. Stopping.")
+def get_cpu_time(domain, pid):
+    p = psutil.Process(pid)
+    if psutil.__version__ <= PSUTIL_OLD_VERSION:
+        cpu_time = p.get_cpu_times()
+    else:
+        cpu_time = p.cpu_times()
 
-    regex = re.compile(r"^\s*PID\s*USER")
-    position = None
+    return cpu_time[0] + cpu_time[1]
 
-    lines = output.strip().split("\n")
-    lines = lines[len(lines)/2:]
-    lines = map(lambda line: line.strip(), lines)
-    for i, line in enumerate(lines):
-        if regex.match(line):
-            position = i
-            break
 
-    if not position:
-        raise LibvirtVmDataError("Cannot parse CPU load from top. "
-                                 "Stopping.")
+def get_cpu_load(domain, pid):
+    p = psutil.Process(pid)
+    if psutil.__version__ <= PSUTIL_OLD_VERSION:
+        cpu_load = p.get_cpu_percent(DATA_RETRIEVAL_WAIT)
+    else:
+        cpu_load = p.cpu_percent(DATA_RETRIEVAL_WAIT)
 
-    data_lines = lines[position+1:]
-
-    return map(lambda row: row.split()[6], data_lines)
+    return cpu_load
 
 
 def get_memory(domain):
@@ -327,16 +303,15 @@ def get_type(domain, xml):
     return domain_tag["type"]
 
 
-def print_batch(vms):
-    for vm in vms.values():
-        vm_name = vm.pop(TAG_DEPLOY_ID)
-        vm_type = vm.pop(TAG_TYPE)
+def print_vm(vm):
+    vm_name = vm.pop(TAG_DEPLOY_ID)
+    vm_type = vm.pop(TAG_TYPE)
 
-        timestamp = int(time.time())
-        for key in vm.keys():
-            print("%s %d %s %s=%s %s=%s" % (key, timestamp, vm[key],
-                                            TAG_DEPLOY_ID, vm_name, TAG_TYPE,
-                                            vm_type))
+    timestamp = int(time.time())
+    for key in vm.keys():
+        print("%s %d %s %s=%s %s=%s" % (key, timestamp, vm[key],
+                                        TAG_DEPLOY_ID, vm_name, TAG_TYPE,
+                                        vm_type))
 
 if __name__ == '__main__':
     sys.exit(main())
