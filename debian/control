@@ -10,7 +10,7 @@ Homepage: http://opentsdb.net/
 Package: meta-tcollector
 Architecture: all
 Depends: ${misc:Depends}, ${python:Depends}, adduser
-Recommends: smartmontools, python-bs4, python-libvirt
+Recommends: smartmontools, python-bs4, python-libvirt, python-psutil
 Conflicts: tcollector
 Section: utils
 Description: data collection framework for OpenTSDB
