@@ -1,3 +1,9 @@
+tcollector (1.0-7) stable; urgency=low
+
+  * Fixed log rotation.
+
+ -- Michal Kimle <kimle.micha@gmail.com>  Wed, 15 Jul 2015 11:14:00 +0100
+
 tcollector (1.0-6) stable; urgency=low
 
   * Small tweaks and unification of init wrappers.

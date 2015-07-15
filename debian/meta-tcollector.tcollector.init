@@ -18,8 +18,11 @@ if [ -r /etc/default/tcollector ]; then
     . /etc/default/tcollector
 fi
 
+DEFAULT_LOGDIR="/var/log/tcollector"
+DEFAULT_LOGFILE="${DEFAULT_LOGDIR}/tcollector.log"
+
 PIDFILE=${PIDFILE-"/var/run/tcollector.pid"}
-LOGFILE=${LOGFILE-"/var/log/tcollector.log"}
+LOGFILE=${LOGFILE-${DEFAULT_LOGFILE}}
 COLLECTOR_PATH=${COLLECTOR_PATH-"/usr/lib/tcollector/collectors"}
 DEDUP_INTERVAL=${DEDUP_INTERVAL-600}
 EVICT_INTERVAL=${EVICT_INTERVAL-6000}
@@ -50,7 +53,13 @@ case $1 in
             log_failure_msg "TSD_HOSTS is empty"
             exit 6
         fi
-        fix_perms $LOGFILE
+
+	# creating log directory if default log location is used
+	if [ "$LOGFILE" = "$DEFAULT_LOGFILE" ]; then
+	    mkdir -p $DEFAULT_LOGDIR
+	    chown $RUN_AS_USER:$RUN_AS_GROUP $DEFAULT_LOGDIR
+	fi
+
         fix_perms $PIDFILE
         find "$COLLECTOR_PATH" -name '*.pyc' -delete
 
@@ -69,8 +78,9 @@ case $1 in
             --startas $DAEMON -- -c "$COLLECTOR_PATH" -L $TSD_HOSTS\
             -t host=$HOSTNAME --dedup-interval $DEDUP_INTERVAL\
             --reconnect-interval $RECONNECT_INTERVAL\
+	    --logfile $LOGFILE\
             --max-bytes $LOGFILE_MAX_BYTES --backup-count $LOGFILE_BACKUP_COUNT\
-            --evict-interval $EVICT_INTERVAL -P "$PIDFILE" -D $EXTRA_TAGS_OPTS
+            --evict-interval $EVICT_INTERVAL -D $EXTRA_TAGS_OPTS
 
         log_end_msg $?
         ;;

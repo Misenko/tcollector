@@ -2,7 +2,7 @@
 #TSD_HOSTS="127.0.0.1:4242"
 
 #COLLECTOR_PATH=/usr/lib/tcollector/collectors
-#LOGFILE=/var/log/tcollector.log
+#LOGFILE=/var/log/tcollector/tcollector.log
 #PIDFILE=/var/run/tcollector.pid
 
 #DEDUP_INTERVAL=600
