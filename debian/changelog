@@ -1,6 +1,7 @@
 tcollector (1.0-7) stable; urgency=low
 
   * Fixed log rotation.
+    Removed unused and problematic collectors (Hadoop related, S.M.A.R.T., etc.).
 
  -- Michal Kimle <kimle.micha@gmail.com>  Wed, 15 Jul 2015 11:14:00 +0100
 
