@@ -103,7 +103,7 @@ def main():
         while True:
             domains = conn.listAllDomains()
             random.shuffle(domains)
-            pids = get_pids(domains)
+            pids = get_pids()
 
             for domain in domains:
                 process_domain(domain, pids.get(domain.UUIDString()))
@@ -133,15 +133,21 @@ def process_domain(domain, pid):
     if not pid:
         utils.err("Cannot find PID for domain %s. Skipping." % domain.name())
         return
+    if not psutil.pid_exists(pid):
+        utils.err("PID %d no longer exists for domain %s. Skipping." %
+                  (pid, domain.name()))
+        return
 
     try:
         vm = {}
+        vm[FIELDS["cpu_time"]] = get_cpu_time(pid)
+        vm[FIELDS["cpu_load"]] = get_cpu_load(pid)
+        vm[FIELDS["memory"]] = get_memory(domain)
+
         xml = BeautifulSoup(domain.XMLDesc())
         vm[TAG_DEPLOY_ID] = domain.name()
         vm[TAG_TYPE] = get_type(domain, xml)
-        vm[FIELDS["memory"]] = get_memory(domain)
-        vm[FIELDS["cpu_time"]] = get_cpu_time(domain, pid)
-        vm[FIELDS["cpu_load"]] = get_cpu_load(domain, pid)
+
         vm.update(get_network_traffic(domain, xml))
         vm.update(get_disk_io(domain, xml))
     except LibvirtVmDataError as err:
@@ -151,7 +157,7 @@ def process_domain(domain, pid):
     print_vm(vm)
 
 
-def get_pids(domains):
+def get_pids():
     p1 = subprocess.Popen(["ps", "-ewwo", "pid,command"],
                           stdout=subprocess.PIPE)
     output, err = p1.communicate()
@@ -178,7 +184,7 @@ def get_pids(domains):
     return pids
 
 
-def get_cpu_time(domain, pid):
+def get_cpu_time(pid):
     p = psutil.Process(pid)
     if psutil.__version__ <= PSUTIL_OLD_VERSION:
         cpu_time = p.get_cpu_times()
@@ -188,7 +194,7 @@ def get_cpu_time(domain, pid):
     return cpu_time[0] + cpu_time[1]
 
 
-def get_cpu_load(domain, pid):
+def get_cpu_load(pid):
     p = psutil.Process(pid)
     if psutil.__version__ <= PSUTIL_OLD_VERSION:
         cpu_load = p.get_cpu_percent(DATA_RETRIEVAL_WAIT)
