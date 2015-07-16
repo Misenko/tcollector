@@ -66,7 +66,8 @@ FIELDS = {"net_rx": "%snetwork.rx" % METRIC_PREFIX,
           "disk_total_bytes": "%sdisk.total.bytes" % METRIC_PREFIX,
           "disk_current_total_bytes": "%sdisk.current.total.bytes" %
                                       METRIC_PREFIX,
-          "memory": "%smemory" % METRIC_PREFIX}
+          "memory": "%smemory" % METRIC_PREFIX,
+          "count": "%scount" % METRIC_PREFIX}
 
 STATES = {0: "NO_STATE",
           1: "RUNNING",
@@ -105,8 +106,12 @@ def main():
             random.shuffle(domains)
             pids = get_pids()
 
+            count = 0
             for domain in domains:
-                process_domain(domain, pids.get(domain.UUIDString()))
+                if process_domain(domain, pids.get(domain.UUIDString())):
+                    count += 1
+
+            print("%s %d %s" % (FIELDS["count"], int(time.time()), count))
 
             sys.stdout.flush()
             time.sleep(INTERVAL)
@@ -129,14 +134,14 @@ def check_imports():
 def process_domain(domain, pid):
     if domain.isActive() != 1:
         utils.err("Domain %s is inactive. Skipping." % domain.name())
-        return
+        return False
     if not pid:
         utils.err("Cannot find PID for domain %s. Skipping." % domain.name())
-        return
+        return False
     if not psutil.pid_exists(pid):
         utils.err("PID %d no longer exists for domain %s. Skipping." %
                   (pid, domain.name()))
-        return
+        return False
 
     try:
         vm = {}
@@ -152,9 +157,10 @@ def process_domain(domain, pid):
         vm.update(get_disk_io(domain, xml))
     except LibvirtVmDataError as err:
         utils.err(err.value)
-        return
+        return False
 
     print_vm(vm)
+    return True
 
 
 def get_pids():
