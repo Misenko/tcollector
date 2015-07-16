@@ -78,7 +78,7 @@ case $1 in
             --startas $DAEMON -- -c "$COLLECTOR_PATH" -L $TSD_HOSTS\
             -t host=$HOSTNAME --dedup-interval $DEDUP_INTERVAL\
             --reconnect-interval $RECONNECT_INTERVAL\
-	    --logfile $LOGFILE\
+	    --logfile $LOGFILE --pidfile $PIDFILE\
             --max-bytes $LOGFILE_MAX_BYTES --backup-count $LOGFILE_BACKUP_COUNT\
             --evict-interval $EVICT_INTERVAL -D $EXTRA_TAGS_OPTS
 
