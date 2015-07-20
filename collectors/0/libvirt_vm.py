@@ -67,7 +67,9 @@ FIELDS = {"net_rx": "%snetwork.rx" % METRIC_PREFIX,
           "disk_current_total_bytes": "%sdisk.current.total.bytes" %
                                       METRIC_PREFIX,
           "memory": "%smemory" % METRIC_PREFIX,
-          "count": "%scount" % METRIC_PREFIX}
+          "count": "%scount" % METRIC_PREFIX,
+          "max_memory": "%smax.memory" % METRIC_PREFIX,
+          "max_vcpus": "%smax.vcpus" % METRIC_PREFIX}
 
 STATES = {0: "NO_STATE",
           1: "RUNNING",
@@ -148,6 +150,8 @@ def process_domain(domain, pid):
         vm[FIELDS["cpu_time"]] = get_cpu_time(pid)
         vm[FIELDS["cpu_load"]] = get_cpu_load(pid)
         vm[FIELDS["memory"]] = get_memory(domain)
+        vm[FIELDS["max_memory"]] = domain.maxMemory()
+        vm[FIELDS["max_vcpus"]] = domain.maxVcpus()
 
         xml = BeautifulSoup(domain.XMLDesc())
         vm[TAG_DEPLOY_ID] = domain.name()
