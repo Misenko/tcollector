@@ -13,6 +13,31 @@
 # of the GNU Lesser General Public License along with this program.  If not,
 # see <http://www.gnu.org/licenses/>.
 
+
+# Metrics this collector generates:
+# libvirt.vm.count - number of running VMs
+# libvirt.vm.cpu.load - VM's current CPU load (can be higher than 100%)
+# libvirt.vm.cpu.time - CPU time spent by VM
+# libvirt.vm.disk.read.requests - number of total VM's read requests
+# libvirt.vm.disk.read.bytes - number of total VM's read bytes
+# libvirt.vm.disk.write.requests - number of total VM's write requests
+# libvirt.vm.disk.write.bytes - number of total VM's write bytes
+# libvirt.vm.disk.total.requests - number of total VM's read + write requests
+# libvirt.vm.disk.total.bytes - number of total VM's read + write bytes
+# libvirt.vm.disk.current.read.requests - number of VM's current read requests
+# libvirt.vm.disk.current.read.bytes - number of VM's current read bytes
+# libvirt.vm.disk.current.write.requests - number of VM's current write requests
+# libvirt.vm.disk.current.write.bytes - number of VM's current write bytes
+# libvirt.vm.disk.current.total.requests - number of VM's current read + write requests
+# libvirt.vm.disk.current.total.bytes - number of VM's current read + write bytes
+# libvirt.vm.memory - memory used by VM in kB
+# libvirt.vm.max.memory - memory requested in VM's template in kB
+# libvirt.vm.max.vcpus - number of CPU requested in VM's template
+# libvirt.vm.network.rx - number of VM's received bytes via network
+# libvirt.vm.network.tx - number of VM's transmitted bytes via network
+# libvirt.vm.network.current.rx - VM's current network incoming bandwidth
+# libvirt.vm.network.current.tx - VM's current network outcoming bandwidth
+
 import sys
 import time
 import random
@@ -23,6 +48,7 @@ from collectors.lib import utils
 from collectors.lib.libvirt_vm_errors import LibvirtVmDataError
 from collectors.lib.libvirt_vm_errors import LibvirtVmProcessingError
 
+# gracefully deals with import errors
 try:
     import libvirt
 except ImportError:
@@ -52,7 +78,7 @@ FIELDS = {"net_rx": "%snetwork.rx" % METRIC_PREFIX,
           "disk_read_bytes": "%sdisk.read.bytes" % METRIC_PREFIX,
           "disk_write_reqs": "%sdisk.write.requests" % METRIC_PREFIX,
           "disk_write_bytes": "%sdisk.write.bytes" % METRIC_PREFIX,
-          "disk_total_reqs": "%sdisk.total.req" % METRIC_PREFIX,
+          "disk_total_reqs": "%sdisk.total.requests" % METRIC_PREFIX,
           "disk_current_read_reqs": "%sdisk.current.read.requests" %
                                     METRIC_PREFIX,
           "disk_current_read_bytes": "%sdisk.current.read.bytes" %
@@ -61,7 +87,7 @@ FIELDS = {"net_rx": "%snetwork.rx" % METRIC_PREFIX,
                                      METRIC_PREFIX,
           "disk_current_write_bytes": "%sdisk.current.write.bytes" %
                                       METRIC_PREFIX,
-          "disk_current_total_reqs": "%sdisk.current.total.reqs" %
+          "disk_current_total_reqs": "%sdisk.current.total.requests" %
                                      METRIC_PREFIX,
           "disk_total_bytes": "%sdisk.total.bytes" % METRIC_PREFIX,
           "disk_current_total_bytes": "%sdisk.current.total.bytes" %
@@ -71,6 +97,7 @@ FIELDS = {"net_rx": "%snetwork.rx" % METRIC_PREFIX,
           "max_memory": "%smax.memory" % METRIC_PREFIX,
           "max_vcpus": "%smax.vcpus" % METRIC_PREFIX}
 
+# VMs' states
 STATES = {0: "NO_STATE",
           1: "RUNNING",
           2: "BLOCKED",
@@ -89,7 +116,7 @@ LIBVIRT_URI = "qemu:///system"
 
 ERROR_CODE_DONT_RETRY = 13  # do not restart this collector after failure
 
-DATA_RETRIEVAL_WAIT = 0.3
+DATA_RETRIEVAL_WAIT = 0.3  # number of seconds between two data requests
 
 PSUTIL_OLD_VERSION = '1.2.1'
 
@@ -111,8 +138,9 @@ def main():
             count = 0
             for domain in domains:
                 if process_domain(domain, pids.get(domain.UUIDString())):
-                    count += 1
+                    count += 1  # count only successfully processed VMs
 
+            # write libvirt.vm.count metric
             print("%s %d %s" % (FIELDS["count"], int(time.time()), count))
 
             sys.stdout.flush()
@@ -124,6 +152,7 @@ def main():
 
 
 def check_imports():
+    """Checks whether all needed modules are imported"""
     if libvirt is None:
         raise LibvirtVmProcessingError("Python module 'libvirt' is missing")
     if BeautifulSoup is None:
@@ -134,6 +163,8 @@ def check_imports():
 
 
 def process_domain(domain, pid):
+    """Process one domain (vm)"""
+    # skip vms that are not running
     if domain.isActive() != 1:
         utils.err("Domain %s is inactive. Skipping." % domain.name())
         return False
@@ -145,6 +176,7 @@ def process_domain(domain, pid):
                   (pid, domain.name()))
         return False
 
+    # populate vm structure with metrics
     try:
         vm = {}
         vm[FIELDS["cpu_time"]] = get_cpu_time(pid)
@@ -168,6 +200,7 @@ def process_domain(domain, pid):
 
 
 def get_pids():
+    """Retrieves all vms' PIDs based on their UUID"""
     p1 = subprocess.Popen(["ps", "-ewwo", "pid,command"],
                           stdout=subprocess.PIPE)
     output, err = p1.communicate()
@@ -220,6 +253,10 @@ def get_memory(domain):
 
 
 def get_per_sec_data(first_data, second_data):
+    """
+    Takes two set of data and returns per second result based
+    on interval between them
+    """
     return map(lambda data: (data[1] - data[0])/DATA_RETRIEVAL_WAIT,
                zip(first_data, second_data))
 
@@ -320,6 +357,7 @@ def get_type(domain, xml):
 
 
 def print_vm(vm):
+    """Prints vm's metrics"""
     vm_name = vm.pop(TAG_DEPLOY_ID)
     vm_type = vm.pop(TAG_TYPE)
 
