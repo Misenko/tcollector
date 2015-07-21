@@ -1,5 +1,5 @@
 # List of comma-seperated TSD hosts (host:port)
-#TSD_HOSTS="127.0.0.1:4242"
+TSD_HOSTS="127.0.0.1:4242"
 
 #COLLECTOR_PATH=/usr/lib/tcollector/collectors
 #LOGFILE=/var/log/tcollector/tcollector.log
