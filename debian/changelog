@@ -1,3 +1,9 @@
+tcollector (1.0-9) stable; urgency=low
+
+  * Added cpustat collector
+
+ -- Michal Kimle <kimle.micha@gmail.com>  Mon, 07 Dec 2015 16:49:00 +0100
+
 tcollector (1.0-8) stable; urgency=low
 
   * Added metrics to libvirt_vm collector
