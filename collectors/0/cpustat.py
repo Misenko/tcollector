@@ -74,8 +74,10 @@ def write_cpu_info():
     regex = re.compile(r'[\s@\(\)]+')
     for cpuinfo in cpuinfos:
         cpu = {}
-        cpu[FIELDS["cpu_mhz"]] = cpuinfo["cpu MHz"]
-        cpu[FIELDS["cpu_cores"]] = cpuinfo["cpu cores"]
+        if "cpu MHz" in cpuinfo:
+            cpu[FIELDS["cpu_mhz"]] = cpuinfo["cpu MHz"]
+        if "cpu cores" in cpuinfo:
+            cpu[FIELDS["cpu_cores"]] = cpuinfo["cpu cores"]
         cpu[TAG_MODEL] = re.sub(regex, '-', cpuinfo["model name"])
         cpu[TAG_PROCESSOR] = cpuinfo["processor"]
 
