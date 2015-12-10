@@ -48,6 +48,8 @@ ERROR_CODE_DONT_RETRY = 13  # do not restart this collector after failure
 
 def main():
     try:
+        check_imports()
+
         while True:
             # write cpustat.cpu.count metric
             write_cpu_info()
@@ -58,6 +60,11 @@ def main():
     except CpustatProcessingError as err:
         utils.err(err.value)
         return ERROR_CODE_DONT_RETRY
+
+def check_imports():
+    """Checks whether all needed modules are imported"""
+    if numpy is None:
+        raise CpustatProcessingError("Python module 'numpy' is missing")
 
 def write_cpu_count():
     print("%s %d %s" % (FIELDS["cpu_count"], int(time.time()), multiprocessing.cpu_count()))
